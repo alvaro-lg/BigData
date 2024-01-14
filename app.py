@@ -100,9 +100,9 @@ class SparkApp:
 
     def process_data(self, df: DataFrame) -> DataFrame:
         # Create a VectorAssembler
-        # Flights that have not been cancelled (cancelled != 0) and whose elapsed time is positive
+        # Flights that have not been cancelled (cancelled == 0) and whose elapsed time is positive
         # will be the ones used, as the goal is to predict the arrival time
-        df = df.filter((df["Cancelled"] != 0) & (df['CRSElapsedTime'] > 0)).distinct()
+        df = df.filter((df["Cancelled"] == False) & (df['CRSElapsedTime'] > 0)).distinct() #6444006 rows without distinct() and 6443924 with distinct(). ???
 
         # DayofMonth, Month and Year could be an unique field called Date with 'dd/MM/yyyy' format
         df = df.withColumn("Date", concat(col("DayofMonth"), lit("/"), col("Month"), lit("/"), col("Year"))).drop("DayofMonth").drop("Month").drop("Year")
@@ -114,7 +114,7 @@ class SparkApp:
                            .when(col("DayofWeek") == 3, "Wednesday")
                            .when(col("DayofWeek") == 4, "Thursday")
                            .when(col("DayofWeek") == 5, "Friday")
-                           .when(col("DayofWeek") == 6, "Saturdya")
+                           .when(col("DayofWeek") == 6, "Saturday")
                            .when(col("DayofWeek") == 7, "Sunday"))
         
         # DepTime, CRSDepTime, CRSArrTime could be clearer if insted of using a number or hour it uses Time of Day
