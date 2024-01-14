@@ -8,11 +8,13 @@ from pyspark.ml.pipeline import Pipeline
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import IntegerType, StringType, BooleanType, StructField, StructType
+from pyspark.ml.regression import RandomForestRegressor
+from pyspark.ml.evaluation import RegressionEvaluator
 
 # Constants
 DATA_DIRECTORY = Path("data")
 COLUMN_FILTER = [
-    "ArrTime",
+    #"ArrTime",
     "ActualElapsedTime",
     "AirTime",
     "TaxiIn",
@@ -34,6 +36,7 @@ COLUMN_SCHEME = StructType([
     StructField("DayOfWeek", IntegerType(), True),
     StructField("DepTime", IntegerType(), True),
     StructField("CRSDepTime", IntegerType(), True),
+    StructField("ArrTime", IntegerType(), True),
     StructField("CRSArrTime", IntegerType(), True),
     StructField("UniqueCarrier", StringType(), True),
     StructField("FlightNum", IntegerType(), True),
@@ -107,6 +110,8 @@ class SparkApp:
         # DayofMonth, Month and Year could be an unique field called Date with 'dd/MM/yyyy' format
         df = df.withColumn("Date", concat(col("DayofMonth"), lit("/"), col("Month"), lit("/"), col("Year"))).drop("DayofMonth").drop("Month").drop("Year")
 
+        df = df.drop("Cancelled")
+
         # DayofWeek could be clearer if instead of using number it uses the names of the week
         df = df.withColumn("DayofWeek", 
                            when(col("DayofWeek") == 1, "Monday")
@@ -117,7 +122,7 @@ class SparkApp:
                            .when(col("DayofWeek") == 6, "Saturday")
                            .when(col("DayofWeek") == 7, "Sunday"))
         
-        
+        df.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in df.columns]).show()
         # TODO: Missing values
         return df
 
@@ -127,10 +132,11 @@ class SparkApp:
         """
         df = self.read_data(self.__in_dir)
         df = self.process_data(df)
+        df.show(10)
 
         # TODO: Testing some ML models
         categorical_columns = ["Date","DayofWeek", "UniqueCarrier", "Origin", "Dest"]
-        other_columns = ["DepTime", "CRSDepTime", "CRSArrTime", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance", "Cancelled"]
+        other_columns = ["DepTime", "CRSDepTime", "CRSArrTime", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance"]
 
         index_columns = [col + "Index" for col in categorical_columns]
 
@@ -153,9 +159,28 @@ class SparkApp:
         pipeline = Pipeline(stages=[indexer, encoder, assembler, normalizer])
         df = pipeline.fit(df).transform(df)
 
-        # TODO: Remove this
         df.show(10)
-        df.printSchema()
+        
+
+        '''(train_data, test_data) = df.randomSplit([0.9, 0.1], seed=123)
+        #print('Train dataset count:', train_data.count())
+        #print('Test dataset count:', test_data.count())
+
+        rf = RandomForestRegressor(featuresCol='features', labelCol='ArrTime')
+        rf_model = rf.fit(train_data)
+
+        train_predictions = rf_model.transform(train)
+        test_predictions = rf_model.transform(test)
+
+        evaluator = RegressionEvaluator(predictionCol="prediction", \
+                 labelCol="ArrTime", metricName="r2")
+
+        print("Train R2:", evaluator.evaluate(train_predictions))
+        print("Test R2:", evaluator.evaluate(test_predictions))'''
+
+        # TODO: Remove this
+        #df.show(10)
+        #df.printSchema()
 
 
 if __name__ == "__main__":
