@@ -8,7 +8,7 @@ from pyspark.ml.pipeline import Pipeline
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col
 from pyspark.sql.types import IntegerType, StringType, BooleanType, StructField, StructType
-from pyspark.ml.regression import RandomForestRegressor
+from pyspark.ml.regression import RandomForestRegressor, LinearRegression, GBTRegressor, DecisionTreeRegressor
 from pyspark.ml.evaluation import RegressionEvaluator
 
 # Constants
@@ -171,16 +171,29 @@ class SparkApp:
         # Debugging
         print(f'Train/Test dataset count: {df_train.count()}/{df_test.count()}')
 
-        rf = RandomForestRegressor(featuresCol='finalFeatures', labelCol=self.__target_variable)
-        rf_model = rf.fit(df_train)
+        models = {
+            "Linear Regression": LinearRegression,
+            "Random Forest Regressor": RandomForestRegressor,
+            "GBT Regressor": GBTRegressor,
+            "Decision Tree Regressor": DecisionTreeRegressor
+        }
 
-        train_predictions = rf_model.transform(df_train)
-        test_predictions = rf_model.transform(df_test)
+        for model_name, model in models.items():
 
-        evaluator = RegressionEvaluator(predictionCol="prediction", labelCol="ArrTime", metricName="r2")
+            # Running each model
+            print(f"Running {model_name}...")
+            predictor = model(featuresCol='finalFeatures', labelCol=self.__target_variable)
+            predictor = predictor.fit(df_train)
 
-        print("Train R2:", evaluator.evaluate(train_predictions))
-        print("Test R2:", evaluator.evaluate(test_predictions))
+            train_predictions = predictor.transform(df_train)
+            test_predictions = predictor.transform(df_test)
+
+            evaluator = RegressionEvaluator(predictionCol="prediction", labelCol=self.__target_variable,
+                                            metricName="rmse")
+
+            print(f"Performance of {model_name}:")
+            print("\tTrain RMSE:", evaluator.evaluate(train_predictions))
+            print("\tTest RMSE:", evaluator.evaluate(test_predictions))
 
 
 if __name__ == "__main__":
