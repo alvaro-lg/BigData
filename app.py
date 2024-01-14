@@ -101,88 +101,30 @@ class SparkApp:
     def process_data(self, df: DataFrame) -> DataFrame:
         # Create a VectorAssembler
         # Flights that have not been cancelled (cancelled == 0) and whose elapsed time is positive
-        # will be the ones used, as the goal is to predict the arrival time
-        df = df.filter((df["Cancelled"] == False) & (df['CRSElapsedTime'] > 0)).distinct() #6444006 rows without distinct() and 6443924 with distinct(). ???
+        # will be the ones used, as the goal is to predict the arcategorical_columns = ["DayofWeek", "UniqueCarrier", "Origin", "Dest"]
+        other_columns = ["Date", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance", "Cancelled", "DepTime", "CRSDepTime", "CRSArrTime"]
 
-        # DayofMonth, Month and Year could be an unique field called Date with 'dd/MM/yyyy' format
-        df = df.withColumn("Date", concat(col("DayofMonth"), lit("/"), col("Month"), lit("/"), col("Year"))).drop("DayofMonth").drop("Month").drop("Year")
+        index_columns = [col + "Index" for col in categorical_columns]
 
-        # DayofWeek could be clearer if instead of using number it uses the names of the week
-        df = df.withColumn("DayofWeek", 
-                           when(col("DayofWeek") == 1, "Monday")
-                           .when(col("DayofWeek") == 2, "Tuesday")
-                           .when(col("DayofWeek") == 3, "Wednesday")
-                           .when(col("DayofWeek") == 4, "Thursday")
-                           .when(col("DayofWeek") == 5, "Friday")
-                           .when(col("DayofWeek") == 6, "Saturday")
-                           .when(col("DayofWeek") == 7, "Sunday"))
-        
-        # DepTime, CRSDepTime, CRSArrTime could be clearer if insted of using a number or hour it uses Time of Day
-        # It is useful to prevent overfitting, enhance model interpretability and helpful for some models
-        df = df.withColumn("DepTime",
-                           when((col("DepTime") >= 1800) & (col("DepTime") <= 2359), "Evening")
-                           .when((col("DepTime") >= 1200) & (col("DepTime") < 1800), "Afternoon")
-                           .when((col("DepTime") >= 600) & (col("DepTime") < 1200), "Morning")
-                           .when((col("DepTime") >= 0) & (col("DepTime") < 600), "Overnight")
-                           .otherwise("Unknown"))
-        
-        df = df.withColumn("CRSDepTime",
-                    when((col("CRSDepTime") >= 1800) & (col("CRSDepTime") <= 2359), "Evening")
-                    .when((col("CRSDepTime") >= 1200) & (col("CRSDepTime") < 1800), "Afternoon")
-                    .when((col("CRSDepTime") >= 600) & (col("CRSDepTime") < 1200), "Morning")
-                    .when((col("CRSDepTime") >= 0) & (col("CRSDepTime") < 600), "Overnight")
-                    .otherwise("Unknown"))
-        
-        df = df.withColumn("CRSArrTime",
-                           when((col("CRSArrTime") >= 1800) & (col("CRSArrTime") <= 2359), "Evening")
-                           .when((col("CRSArrTime") >= 1200) & (col("CRSArrTime") < 1800), "Afternoon")
-                           .when((col("CRSArrTime") >= 600) & (col("CRSArrTime") < 1200), "Morning")
-                           .when((col("CRSArrTime") >= 0) & (col("CRSArrTime") < 600), "Overnight")
-                           .otherwise("Unknown"))
-        
-        # TODO: Missing values
-        return df
+        # StringIndexer
+        indexer = StringIndexer(inputCols=categorical_columns, outputCols=index_columns)
 
-    def run(self) -> None:
-        """
-            Main method for the Spark application. Runs the required functionality.
-        """
-        df = self.read_data(self.__in_dir)
-        df = self.process_data(df)
+        vec_columns = [col + "Vec" for col in categorical_columns]
 
-        # TODO: Testing some ML models
-        categorical_columns = ["DayofWeek", "DepTime", "CRSDepTime", "CRSDepTime", "UniqueCarrier", "Origin", "Dest"]
-        indexed_columns = [col + "_index" for col in categorical_columns]
-        encoded_columns = ["encoded_" + col for col in categorical_columns]
-        other_columns = ["Date", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance", "Cancelled"]
-        assembler_columns = encoded_columns + other_columns
-        
-        # Create a StringIndexer to convert the categorical column to indices
-        indexers = [StringIndexer(inputCol=col, outputCol=indexed_columns) for col, indexed_col in categorical_columns]
-        # # Create a OneHotEncoder to encode the indices into one-hot vectors
-        # encoder = OneHotEncoder(inputCol=indexed_columns, outputCol=encoded_columns)
-        
-        # # Create a VectorAssembler
-        # assembler = VectorAssembler(inputCols=assembler_columns, outputCol="features")
-        # dataset = assembler.transform(df)
+        # OneHotEncoder
+        encoder = OneHotEncoder(inputCols=index_columns, outputCols=vec_columns)
 
-        # # Create a Normalizer
-        # normalizer = Normalizer(inputCol="features", outputCol="normFeatures", p=1.0)
+        # VectorAssembler
+        num_vec_columns = other_columns + vec_columns
+        assembler = VectorAssembler(inputCols=num_vec_columns, outputCol="features")
 
-        # # Create K-Means model
-        # kmeans = KMeans(featuresCol="features", k=2)
+        # Normalizer
+        normalizer = Normalizer(inputCol="features", outputCol="normFeatures", p=1.0)
 
-        # # Create a Pipeline
-        # pipeline = Pipeline(stages=[assembler, normalizer, kmeans])
-
-        # # Fit the Pipeline on the training data
-        # model = pipeline.fit(training)
-
-        # # Transform the test data and show the results
-        # transformed_data = model.transform(test)
-        # transformed_data.show(truncate=False)
-
-        
+        # All together in pipeline
+        pipeline = Pipeline(stages=[indexer, encoder, assembler, normalizer])
+        df = pipeline.fit(df).transform(df)
+        df.printSchema()
 
         # TODO: Remove this
         df.show(10)
