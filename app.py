@@ -117,28 +117,6 @@ class SparkApp:
                            .when(col("DayofWeek") == 6, "Saturday")
                            .when(col("DayofWeek") == 7, "Sunday"))
         
-        # DepTime, CRSDepTime, CRSArrTime could be clearer if insted of using a number or hour it uses Time of Day
-        # It is useful to prevent overfitting, enhance model interpretability and helpful for some models
-        df = df.withColumn("DepTime",
-                           when((col("DepTime") >= 1800) & (col("DepTime") <= 2359), "Evening")
-                           .when((col("DepTime") >= 1200) & (col("DepTime") < 1800), "Afternoon")
-                           .when((col("DepTime") >= 600) & (col("DepTime") < 1200), "Morning")
-                           .when((col("DepTime") >= 0) & (col("DepTime") < 600), "Overnight")
-                           .otherwise("Unknown"))
-        
-        df = df.withColumn("CRSDepTime",
-                    when((col("CRSDepTime") >= 1800) & (col("CRSDepTime") <= 2359), "Evening")
-                    .when((col("CRSDepTime") >= 1200) & (col("CRSDepTime") < 1800), "Afternoon")
-                    .when((col("CRSDepTime") >= 600) & (col("CRSDepTime") < 1200), "Morning")
-                    .when((col("CRSDepTime") >= 0) & (col("CRSDepTime") < 600), "Overnight")
-                    .otherwise("Unknown"))
-        
-        df = df.withColumn("CRSArrTime",
-                           when((col("CRSArrTime") >= 1800) & (col("CRSArrTime") <= 2359), "Evening")
-                           .when((col("CRSArrTime") >= 1200) & (col("CRSArrTime") < 1800), "Afternoon")
-                           .when((col("CRSArrTime") >= 600) & (col("CRSArrTime") < 1200), "Morning")
-                           .when((col("CRSArrTime") >= 0) & (col("CRSArrTime") < 600), "Overnight")
-                           .otherwise("Unknown"))
         
         # TODO: Missing values
         return df
@@ -151,8 +129,8 @@ class SparkApp:
         df = self.process_data(df)
 
         # TODO: Testing some ML models
-        categorical_columns = ["DayofWeek", "UniqueCarrier", "Origin", "Dest"]
-        other_columns = ["Date", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance", "Cancelled", "DepTime", "CRSDepTime", "CRSArrTime"]
+        categorical_columns = ["Date","DayofWeek", "UniqueCarrier", "Origin", "Dest"]
+        other_columns = ["DepTime", "CRSDepTime", "CRSArrTime", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance", "Cancelled"]
 
         index_columns = [col + "Index" for col in categorical_columns]
 
@@ -174,7 +152,6 @@ class SparkApp:
         # All together in pipeline
         pipeline = Pipeline(stages=[indexer, encoder, assembler, normalizer])
         df = pipeline.fit(df).transform(df)
-        df.printSchema()
 
         # TODO: Remove this
         df.show(10)
