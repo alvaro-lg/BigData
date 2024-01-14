@@ -148,11 +148,14 @@ class SparkApp:
         pipeline = Pipeline(stages=string_indexers + [encoder, assembler, scaler, assembler_final])
         df = pipeline.fit(df).transform(df)
 
+        print("Head of processed data:")
+        df.show(10)
+
         # Drop all the columns except the finalFeatures and the target variable
         df = df.drop(*[col_ for col_ in df.columns if col_ not in {"finalFeatures", self.__target_variable}])
 
         # Debugging
-        print("Head of processed data:")
+        print("Head of processed data (for feeding the model):")
         df.show(10)
 
         # Returning the split DataFrame
