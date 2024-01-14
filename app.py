@@ -6,15 +6,16 @@ from pyspark.ml.feature import MinMaxScaler, StringIndexer, OneHotEncoder, Vecto
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.pipeline import Pipeline
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import *
+from pyspark.sql.functions import col
 from pyspark.sql.types import IntegerType, StringType, BooleanType, StructField, StructType
 from pyspark.ml.regression import RandomForestRegressor
 from pyspark.ml.evaluation import RegressionEvaluator
 
 # Constants
 DATA_DIRECTORY = Path("data")
+TARGET_VARIABLE = "ArrDelay"
 COLUMN_FILTER = [
-    #"ArrTime",
+    "ArrTime",
     "ActualElapsedTime",
     "AirTime",
     "TaxiIn",
@@ -27,7 +28,8 @@ COLUMN_FILTER = [
     # Columns dropped by us (NAs):
     "TailNum",
     "TaxiOut",
-    "CancellationCode"
+    "CancellationCode",
+    "FlightNum"  # Uninformative
 ]
 COLUMN_SCHEME = StructType([
     StructField("Year", IntegerType(), True),
@@ -36,10 +38,8 @@ COLUMN_SCHEME = StructType([
     StructField("DayOfWeek", IntegerType(), True),
     StructField("DepTime", IntegerType(), True),
     StructField("CRSDepTime", IntegerType(), True),
-    StructField("ArrTime", IntegerType(), True),
     StructField("CRSArrTime", IntegerType(), True),
     StructField("UniqueCarrier", StringType(), True),
-    StructField("FlightNum", IntegerType(), True),
     StructField("CRSElapsedTime", IntegerType(), True),
     StructField("ArrDelay", IntegerType(), True),
     StructField("DepDelay", IntegerType(), True),
@@ -55,7 +55,7 @@ class SparkApp:
         Spark application for the Big Data curse's final assignment.
     """
 
-    def __init__(self, input_data_dir: Optional[Path] = None, column_filter: List[str] = None,
+    def __init__(self, input_data_dir: Path, target_variable: str, column_filter: List[str] = None,
                  scheme: StructType = None):
         """
             Initializes the Spark application and the Spark context.
@@ -72,6 +72,7 @@ class SparkApp:
         self.__in_dir = input_data_dir.absolute()
         self.__column_filter: List[str] = column_filter
         self.__column_scheme: StructType = scheme
+        self.__target_variable = target_variable
 
     def __del__(self):
         """
@@ -89,7 +90,8 @@ class SparkApp:
 
     def __preprocess_data(self, df: DataFrame) -> DataFrame:
         # Filter values and drop NAs
-        df_filtered = df.drop(*self.__column_filter).na.drop()
+        df_filtered = df.drop(*self.__column_filter)
+        df_filtered = df_filtered.na.drop(subset=df_filtered.columns)
         for column in df_filtered.columns:
             df_filtered = df_filtered.filter(col(column).isNotNull())
 
@@ -99,89 +101,84 @@ class SparkApp:
             data_type = field.dataType
             df_filtered = df_filtered.withColumn(column_name, df_filtered[column_name].cast(data_type))
 
+        # Drop NAs from casting
+        df_filtered = df_filtered.na.drop(subset=df_filtered.columns)
+
+        # Debugging
+        print("Head of cleaned data:")
+        df_filtered.show(10)
+
         return df_filtered
 
-    def process_data(self, df: DataFrame) -> DataFrame:
-        # Create a VectorAssembler
-        # Flights that have not been cancelled (cancelled == 0) and whose elapsed time is positive
-        # will be the ones used, as the goal is to predict the arrival time
-        df = df.filter((df["Cancelled"] == False) & (df['CRSElapsedTime'] > 0)).distinct() #6444006 rows without distinct() and 6443924 with distinct(). ???
+    def process_data(self, df: DataFrame) -> List[DataFrame]:
+        # Encoding categorical variables
+        categorical_int_columns = ["Month", "DayofMonth", "DayOfWeek"]
+        categorical_str_columns = ["UniqueCarrier", "Origin", "Dest"]
+        categorical_bool_columns = ["Cancelled"]
 
-        # DayofMonth, Month and Year could be an unique field called Date with 'dd/MM/yyyy' format
-        df = df.withColumn("Date", concat(col("DayofMonth"), lit("/"), col("Month"), lit("/"), col("Year"))).drop("DayofMonth").drop("Month").drop("Year")
+        # Processing other variables, we will normalize them
+        other_columns = [col_ for col_ in df.columns if col_ not in categorical_int_columns + categorical_str_columns +
+                         categorical_bool_columns and col_ != self.__target_variable]
 
-        df = df.drop("Cancelled")
+        # StringIndexer for string categorical columns
+        categorical_stridx_columns = [col_ + "Index" for col_ in categorical_str_columns]
+        string_indexers = ([StringIndexer(inputCol=col_in, outputCol=col_out)
+                           for col_in, col_out in zip(categorical_str_columns, categorical_stridx_columns)])
 
-        # DayofWeek could be clearer if instead of using number it uses the names of the week
-        df = df.withColumn("DayofWeek", 
-                           when(col("DayofWeek") == 1, "Monday")
-                           .when(col("DayofWeek") == 2, "Tuesday")
-                           .when(col("DayofWeek") == 3, "Wednesday")
-                           .when(col("DayofWeek") == 4, "Thursday")
-                           .when(col("DayofWeek") == 5, "Friday")
-                           .when(col("DayofWeek") == 6, "Saturday")
-                           .when(col("DayofWeek") == 7, "Sunday"))
-        
-        df.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in df.columns]).show()
-        # TODO: Missing values
-        return df
+        # OneHotEncoder for both integer and string categorical columns
+        encoder = OneHotEncoder(inputCols=categorical_int_columns + categorical_stridx_columns,
+                                outputCols=[col_ + "Cat" for col_ in categorical_int_columns] +
+                                           [col_ + "Cat" for col_ in categorical_str_columns])
+
+        # Processing other variables, normalize them using MinMaxScaler
+        assembler = VectorAssembler(inputCols=other_columns, outputCol="features")
+        scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures")
+
+        # Cast boolean column to integer
+        df = df.withColumn("CancelledCat", col("Cancelled").cast("int"))
+
+        # Join the processed variables into a single column
+        assembler_final = VectorAssembler(inputCols=["scaledFeatures"] +
+                                                    [col_ + "Cat" for col_ in categorical_int_columns] +
+                                                    [col_ + "Cat" for col_ in categorical_str_columns] +
+                                                    ["CancelledCat"],
+                                          outputCol="finalFeatures")
+
+        # Forming the actual Pipeline and executing it
+        pipeline = Pipeline(stages=string_indexers + [encoder, assembler, scaler, assembler_final])
+        df = pipeline.fit(df).transform(df)
+
+        # Drop all the columns except the finalFeatures and the target variable
+        df = df.drop(*[col_ for col_ in df.columns if col_ not in {"finalFeatures", self.__target_variable}])
+
+        # Debugging
+        print("Head of processed data:")
+        df.show(10)
+
+        # Returning the split DataFrame
+        return df.randomSplit([0.9, 0.1], seed=2024)
 
     def run(self) -> None:
         """
             Main method for the Spark application. Runs the required functionality.
         """
         df = self.read_data(self.__in_dir)
-        df = self.process_data(df)
-        df.show(10)
+        df_train, df_test = self.process_data(df)
 
-        # TODO: Testing some ML models
-        categorical_columns = ["Date","DayofWeek", "UniqueCarrier", "Origin", "Dest"]
-        other_columns = ["DepTime", "CRSDepTime", "CRSArrTime", "FlightNum", "CRSElapsedTime", "DepDelay", "Distance"]
+        # Debugging
+        print(f'Train/Test dataset count: {df_train.count()}/{df_test.count()}')
 
-        index_columns = [col + "Index" for col in categorical_columns]
+        rf = RandomForestRegressor(featuresCol='finalFeatures', labelCol=self.__target_variable)
+        rf_model = rf.fit(df_train)
 
-        # StringIndexer
-        indexer = StringIndexer(inputCols=categorical_columns, outputCols=index_columns)
+        train_predictions = rf_model.transform(df_train)
+        test_predictions = rf_model.transform(df_test)
 
-        vec_columns = [col + "Vec" for col in categorical_columns]
-
-        # OneHotEncoder
-        encoder = OneHotEncoder(inputCols=index_columns, outputCols=vec_columns)
-
-        # VectorAssembler
-        num_vec_columns = other_columns + vec_columns
-        assembler = VectorAssembler(inputCols=num_vec_columns, outputCol="features")
-
-        # Normalizer
-        normalizer = Normalizer(inputCol="features", outputCol="normFeatures", p=1.0)
-
-        # All together in pipeline
-        pipeline = Pipeline(stages=[indexer, encoder, assembler, normalizer])
-        df = pipeline.fit(df).transform(df)
-
-        df.show(10)
-        
-
-        '''(train_data, test_data) = df.randomSplit([0.9, 0.1], seed=123)
-        #print('Train dataset count:', train_data.count())
-        #print('Test dataset count:', test_data.count())
-
-        rf = RandomForestRegressor(featuresCol='features', labelCol='ArrTime')
-        rf_model = rf.fit(train_data)
-
-        train_predictions = rf_model.transform(train)
-        test_predictions = rf_model.transform(test)
-
-        evaluator = RegressionEvaluator(predictionCol="prediction", \
-                 labelCol="ArrTime", metricName="r2")
+        evaluator = RegressionEvaluator(predictionCol="prediction", labelCol="ArrTime", metricName="r2")
 
         print("Train R2:", evaluator.evaluate(train_predictions))
-        print("Test R2:", evaluator.evaluate(test_predictions))'''
-
-        # TODO: Remove this
-        #df.show(10)
-        #df.printSchema()
+        print("Test R2:", evaluator.evaluate(test_predictions))
 
 
 if __name__ == "__main__":
-    SparkApp(DATA_DIRECTORY, COLUMN_FILTER, COLUMN_SCHEME).run()
+    SparkApp(DATA_DIRECTORY, TARGET_VARIABLE, COLUMN_FILTER, COLUMN_SCHEME).run()
